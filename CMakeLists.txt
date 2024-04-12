@@ -16,4 +16,10 @@ find_package(MPI REQUIRED)
 add_executable(task1
         task1/pms.cpp
 )
+
+add_executable(task2
+        task2/life.cpp
+)
+
 target_link_libraries(task1 PRIVATE MPI::MPI_CXX)
+target_link_libraries(task2 PRIVATE MPI::MPI_CXX)
