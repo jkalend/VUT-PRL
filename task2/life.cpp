@@ -1,9 +1,10 @@
 // life.cpp
 // Author: Jan Kalenda
 // Year: 2024
+// Description: Game of life implementation using MPI
+// The program was run with a script utilising 8 cores
 
-//
-
+#include <array>
 #include <iostream>
 #include <fstream>
 #include <cmath>
@@ -12,6 +13,10 @@
 #include <sstream>
 #include <mpi.h>
 
+/// Apply the rules of the game of life
+/// @param val value of the cell (1 - alive, 0 - dead)
+/// @param count number of alive neighbours
+/// @return new value of the cell
 std::string apply_rule(const char val, const int count) {
 	if (val == '1') {
 		switch (count) {
@@ -29,7 +34,12 @@ std::string apply_rule(const char val, const int count) {
 	return "0";
 }
 
-int get_neighbour_count(const std::vector<std::string> &lines, const long x, const long y) {
+/// Get the number of alive neighbours
+/// @param lines vector of strings representating the table
+/// @param y y coordinate
+/// @param x x coordinate
+/// @return number of alive neighbours
+int get_neighbour_count(const std::vector<std::string> &lines, const long y, const long x) {
 	int count = 0;
 	for (int i = -1; i <= 1; i++) {
 		for (int j = -1; j <= 1; j++) {
@@ -37,14 +47,14 @@ int get_neighbour_count(const std::vector<std::string> &lines, const long x, con
 				continue;
 			}
 
-			const long new_x = x + i;
-			const size_t normalised_x = new_x < 0 ? lines.size() - 1 : new_x % lines.size();
+			const long new_y = y + i;
+			const size_t normalised_y = new_y < 0 ? lines.size() - 1 : new_y % lines.size();
 
-			const long new_y = y + j;
-			const size_t normalised_y = new_y < 0 ? lines[normalised_x].size() + j : new_y % lines[normalised_x].size();
+			const long new_x = x + j;
+			const size_t normalised_x = new_x < 0 ? lines[normalised_y].size() + j : new_x % lines[normalised_y].size();
 			// int prev = i - 1 ? i - 1 : N;
 
-			if (lines[normalised_x][normalised_y] == '1') {
+			if (lines[normalised_y][normalised_x] == '1') {
 				count++;
 			}
 		}
@@ -53,6 +63,9 @@ int get_neighbour_count(const std::vector<std::string> &lines, const long x, con
 	return count;
 }
 
+/// Split the string into lines
+/// @param lines string to split
+/// @return vector of strings
 std::vector<std::string> split_lines(const std::string &lines) {
 	std::vector<std::string> result;
 	std::istringstream line_stream(lines);
@@ -65,13 +78,25 @@ std::vector<std::string> split_lines(const std::string &lines) {
 	return result;
 }
 
+/// Generate a range of numbers
+/// @tparam T type of the numbers
+/// @param size size of the range
+/// @param start start of the range
+/// @return vector of numbers
+template<typename T>
+std::vector<T>range (const int size, const T start = 0) {
+	std::vector<T> result(size);
+	std::iota(result.begin(), result.end(), start);
+	return result;
+}
+
 int main(int argc, char **argv) {
 	MPI_Init(&argc, &argv);
 
 	int rank, size, iteration_count, matrix_size;
-	int first_last[2]; // FIXME - change to std::pair
+	std::pair<int, int> first_last; // used to store the first and last line index for the current core
 	std::string new_line; // used to store the result of the core computation
-	std::vector<char> MPI_lines;
+	std::vector<char> MPI_lines; // used to store the lines for the MPI communication
 	std::vector<std::string> lines;
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 	MPI_Comm_size(MPI_COMM_WORLD, &size);
@@ -79,62 +104,64 @@ int main(int argc, char **argv) {
 	if (rank == 0) {
 		if (argc < 3) {
 			std::cerr << "Usage: " << argv[0] << " <input_file> <iteration_count>" << std::endl;
-			MPI_Finalize();
-			return 1;
+			MPI_Abort(MPI_COMM_WORLD, 1);
 		}
 
-		// std::string input_file = argv[1];
+		try {
+			iteration_count = std::stoi(argv[2]);
+		} catch (const std::invalid_argument &_) {
+			std::cerr << "ERR: Invalid iteration count" << std::endl;
+			MPI_Abort(MPI_COMM_WORLD, 1);
+		}
+
 		std::ifstream file(argv[1], std::ios::in);
 		if (!file.is_open()) {
 			std::cerr << "ERR: File not found" << std::endl;
-			MPI_Finalize();
-			return 1;
+			MPI_Abort(MPI_COMM_WORLD, 1);
 		}
 
 		std::string lines_sending;
 		for (std::string line; std::getline(file, line);) {
 			lines_sending += (line + '\n');
+			if (line.empty()) {
+				continue;
+			}
 			lines.push_back(line);
 		}
 		file.close();
 
 		if (lines.empty()) {
 			std::cerr << "ERR: Empty file" << std::endl;
-			MPI_Finalize();
-			return 1;
+			MPI_Abort(MPI_COMM_WORLD, 1);
 		}
 
 		int lines_per_core = std::ceil(static_cast<double>(lines.size()) / size);
 		int redundant_cores = static_cast<int>(lines_per_core > 1 ? 0 : size - (lines.size() * lines_per_core));
-		matrix_size = lines.size() * lines[0].size() + lines.size(); // + lines.size() for newlines
+		matrix_size = static_cast<int>(lines.size() * lines[0].size() + lines.size()); // + lines.size() for newlines
+		MPI_lines = std::vector(lines_sending.begin(), lines_sending.end());
 
-		// lines_sending = std::accumulate(lines.begin(), lines.end(), std::string(),
-		// 									[](const std::string& a, const std::string& b) {
-		// 										return a + (a.length() > 0 ? "\n" : "") + b;
-		// 									});
-		MPI_lines = std::vector<char>(lines_sending.begin(), lines_sending.end());
-
-		iteration_count = std::stoi(argv[2]);
-		// std::cout << "Iteration count: " << iteration_count << std::endl;
-		// std::cout << "Lines per core: " << lines_per_core << std::endl;
-		// std::cout << "Redundant cores: " << redundant_cores << std::endl;
-
-		std::vector<int> range(size-1);
-		std::iota(range.begin(), range.end(), 1);
-		for (const auto i : range) {
-			first_last[0] = i * lines_per_core;
-			first_last[1] = first_last[0] + lines_per_core - 1;
+		for (const auto i : range(size-1, 1)) {
+			first_last = {i * lines_per_core, i * lines_per_core + lines_per_core - 1};
 			if (i >= (size - redundant_cores)) {
-				first_last[1] = -1;
+				first_last.second = -1;
 			}
 			if (i != 0) {
-				MPI_Send(first_last, 2, MPI_INT, i, 0, MPI_COMM_WORLD);
+				MPI_Send(std::array{first_last.first, first_last.second}.data(), 2, MPI_INT, i, 0, MPI_COMM_WORLD);
 			}
 		}
-		first_last[0] = 0;
-		first_last[1] = lines_per_core - 1;
-
+		first_last = {0, lines_per_core - 1};
 		size -= redundant_cores;
+	}
+
+	if (rank != 0) {
+		int rcv[2];
+		MPI_Recv(rcv, 2, MPI_INT, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+		first_last = std::pair(rcv[0], rcv[1]);
+
+		if (first_last.second == -1) {
+			MPI_Finalize();
+			return 0;
+		}
 	}
 
 	MPI_Bcast(&iteration_count, 1, MPI_INT, 0, MPI_COMM_WORLD);
@@ -143,49 +170,32 @@ int main(int argc, char **argv) {
 
 	MPI_lines.resize(matrix_size);
 
-	if (rank != 0) {
-		MPI_Recv(first_last, 2, MPI_INT, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-
-		if (first_last[1] == -1) {
-			MPI_Finalize();
-			return 0;
-		}
-	}
-
-
-	// std::cout << "Rank: " << rank << " Iteration count: " << iteration_count << std::endl;
-	// std::cout << "Rank: " << rank << " Matrix size: " << matrix_size << std::endl;
-	// std::cout << "Rank: " << rank << " Lines:\n" << std::string(MPI_lines.begin(), MPI_lines.end()) << std::endl;
-	// std::cout << "==============" << std::endl;
-
 	for (int i = 0; i < iteration_count; i++) {
 		new_line.clear(); // nullify the new line for the next iteration
 		MPI_Bcast(MPI_lines.data(), matrix_size, MPI_CHAR, 0, MPI_COMM_WORLD);
 		lines = split_lines(std::string(MPI_lines.begin(), MPI_lines.end() - 1)); // -1 to remove the string terminator
 
-		std::vector<char> buffer((lines[0].size() + 1) * (first_last[1] - first_last[0] + 1) + 1); // +1 for the string terminator
+		std::vector<char> buffer((lines[0].size() + 1) * (first_last.second - first_last.first + 1) + 1); // +1 for the string terminator
 
 		// suspected bottleneck
-		for (int x = first_last[0]; x <= first_last[1]; x++) {
-			for (int y = 0; y < lines[x].size(); y++) {
-				new_line += apply_rule(lines[x][y], get_neighbour_count(lines, x, y));
+		for (int y = first_last.first; y <= first_last.second; y++) {
+			for (int x = 0; x < lines[y].size(); x++) {
+				new_line += apply_rule(lines[y][x], get_neighbour_count(lines, y, x));
 			}
 			new_line += '\n';
 		}
 		if (rank != 0) {
 			// send the result back to the master
-			MPI_Send(new_line.data(), new_line.size(), MPI_CHAR, 0, 0, MPI_COMM_WORLD);
+			MPI_Send(new_line.data(), static_cast<int>(new_line.size()), MPI_CHAR, 0, 0, MPI_COMM_WORLD);
 		} else if (rank == 0) {
-			std::vector<int> range(size-1);
-			std::iota(range.begin(), range.end(), 1);
-			for (const auto i : range) {
+			for (const auto j : range(size-1, 1)) {
 				// receive the result from the slaves
-				MPI_Recv(buffer.data(), (lines[0].size() + 1) * (first_last[1] - first_last[0] + 1), MPI_CHAR, i, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+				MPI_Recv(buffer.data(), static_cast<int>((lines[0].size() + 1) * (first_last.second - first_last.first + 1)), MPI_CHAR, j, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 				// concatenate the result
 				new_line += std::string(buffer.begin(), buffer.end() - 1);
 			}
 			// prepare the table for the next iteration
-			MPI_lines = std::vector<char>(new_line.begin(), new_line.end());
+			MPI_lines = std::vector(new_line.begin(), new_line.end());
 		}
 	}
 
@@ -202,9 +212,6 @@ int main(int argc, char **argv) {
 			}
 		}
 	}
-
-	// std::cout << "Rank: " << rank << " quit"  << std::endl;
-
 
 	MPI_Finalize();
 }

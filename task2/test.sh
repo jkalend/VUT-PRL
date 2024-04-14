@@ -9,7 +9,7 @@ fi;
 
 mpic++ --prefix /usr/local/share/OpenMPI -o life life.cpp
 
-procs=6
+procs=8
 
 mpirun --prefix /usr/local/share/OpenMPI -np $procs life $file $iter
 
